@@ -1,0 +1,238 @@
+---
+- hosts: localhost
+  tasks:
+    - name: Stop and disable firewalld
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+
+    - name: Removing conflicting packages
+      yum:
+        name: runc
+        state: absent
+
+    - name: Installing dependency package --> yum utils.
+      yum:
+        name: yum-utils
+        state: present
+
+    - name: Uninstalling httpd as it will conflict with AWX port 80.
+      yum:
+        name: httpd
+        state: absent
+
+    - name: Check current SELinux mode
+      command: getenforce
+      register: selinux_status
+
+    - name: Set SELinux to permissive mode if enabled
+      command: setenforce 0
+      when: selinux_status.stdout != "Disabled"
+
+
+    - name: Check PostgreSQL status
+      shell: "systemctl status postgresql || echo 'not_installed'"
+      register: postgresql_status
+      ignore_errors: yes
+
+    - name: Install PostgreSQL if not installed
+      yum:
+        name:
+          - postgresql-server
+          - postgresql-contrib
+        state: present
+      when: postgresql_status.stdout.find('not_installed') != -1
+
+    - name: Initialize PostgreSQL database
+      command: postgresql-setup --initdb
+      when: postgresql_status.stdout.find('not_installed') != -1
+
+    - name: Enable and start PostgreSQL service
+      systemd:
+        name: postgresql
+        enabled: yes
+        state: started
+
+    - name: Update pg_hba.conf with the required content
+      copy:
+        dest: /var/lib/pgsql/data/pg_hba.conf
+        content: |
+          local   all             all                                     peer
+          host    all             all             127.0.0.1/32            md5
+          host    all             all             ::1/128                 ident
+          local   replication     all                                     peer
+          host    replication     all             127.0.0.1/32            ident
+          host    replication     all             ::1/128                 ident
+    - name: Restart PostgreSQL service
+      systemd:
+        name: postgresql
+        state: restarted
+
+
+    - name: Delete AWX database if exists
+      shell: |
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS awx;"
+      become: yes
+
+    - name: Delete AWX user if exists
+      shell: |
+        sudo -u postgres psql -c "DROP USER IF EXISTS awx;"
+      become: yes
+
+    - name: Create AWX user account in PostgreSQL
+      shell: |
+        sudo -u postgres psql -c "CREATE USER awx WITH PASSWORD 'awxpass';"
+      become: yes
+
+    - name: Create AWX database
+      shell: |
+        sudo -u postgres psql -c "CREATE DATABASE awx OWNER awx;"
+      become: yes
+
+    - name: Set EPEL repository
+      yum_repository:
+        name: epel
+        description: EPEL repo
+        state: present
+        file: epel_repo
+        baseurl: https://download.fedoraproject.org/pub/epel/$releasever/$basearch/
+        gpgcheck: no
+      register: epelrepo
+
+    - debug: var=epelrepo
+
+    - name: Set Docker CE Repo
+      shell: yum-config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+      register: dockerout
+      when: ansible_os_family == "RedHat"
+
+    - debug: var=dockerout
+
+    - name: Validate Repo
+      shell: "yum repolist | grep -e epel -e docker"
+      register: repoout
+
+    - debug: var=repoout.stdout_lines
+      failed_when: "dockerout|float == 2"
+
+    - name: Installation of docker and AWX dependency packages
+      yum:
+        name: "{{ item }}"
+        state: present
+      with_items:
+       - wget
+       - vim
+       - curl
+       - git
+       - tree
+      register: packageout
+    - debug:
+        var=packageout
+
+    - name: Install App requried packages-Ansible,pip,Docker
+      yum:
+        name: "{{ item }}"
+        state: present
+      with_items:
+       - ansible
+       - nodejs
+       - gettext
+       - device-mapper-persistent-data
+       - lvm2
+       - python3-pip
+       - bzip2
+       - gcc-c++
+       - docker-ce
+       - docker-ce-cli
+       - containerd.io
+      register: app_pckout
+    - debug: var=app_pckout
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      register: docketstart
+    - debug: var=docketstart
+
+    - name: Upgrade pip and setuptools
+      shell: "pip3 install -U pip setuptools"
+
+    - name: Install Docker Compose
+      shell: "pip3 install docker-compose"
+
+    - name: Remove awx folder if it exists
+      file:
+        path: /root/awx
+        state: absent
+
+    - name: Clone AWX repository
+      git:
+        repo: 'https://github.com/ansible/awx.git'
+        dest: "/root/awx"
+        version: "17.1.0"
+        depth: 1
+
+
+    - name: Generate secret key
+      command: "openssl rand -base64 30"
+      register: secret_key_result
+
+    - name: Set the secret key as a variable
+      set_fact:
+        secret_key: "{{ secret_key_result.stdout }}"
+
+
+    - name: Update inventory file with the required content
+      copy:
+        dest: /root/awx/installer/inventory
+        content: |
+          localhost ansible_connection=local ansible_python_interpreter="/usr/bin/env python3"
+          [all:vars]
+          dockerhub_base=ansible
+          awx_task_hostname=awx
+          awx_web_hostname=awxweb
+          postgres_data_dir="/var/lib/awx/pgdocker"
+          host_port=80
+          host_port_ssl=443
+          docker_compose_dir="/var/lib/awx/pgdocker"
+          pg_username=awx
+          pg_password=awxpass
+          pg_database=postgres
+          pg_port=5432
+          admin_user=admin
+          admin_password=password
+          create_preload_data=True
+          secret_key={{ secret_key }}
+          project_data_dir=/var/lib/awx/projects
+
+    - name: AWX Implementation with Ansible Automation
+      shell: "ansible-playbook -i ~/awx/installer/inventory ~/awx/installer/install.yml -vv"
+
+    - name: Show all docker container
+      command: "docker ps "
+      register: running_doc
+    - debug: var=running_doc.stdout_lines
+
+    - pause:
+        prompt: "Wait for container to warm up...! "
+        seconds: 05
+
+    - name: Show Docker logs of awx_task
+      command: docker logs awx_task
+      register: awxtaskout
+    - debug: var=awxtaskout
+
+    - name: Get IP address
+      shell: "hostname -I | awk '{print $1}'"
+      register: server_IP
+
+    - debug:
+        msg:
+        - "Congratulations !! You have successfully installed ansible AWX. "
+        - "To open AWX web page, open your browser and navigate to http://{{ server_IP.stdout }}:80 and use admin user account and default password. For password you can refer awx.yml"
+        - "******************************* All the best ******************************** "
+
+
