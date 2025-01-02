@@ -1,0 +1,50 @@
+---
+- name: Disk Utilization Report with Email Alerts Excluding NFS Paths
+  hosts: all
+  vars_files:
+    - secret.yml
+  tasks:
+    - name: Get disk usage excluding NFS paths
+      ansible.builtin.shell: |
+        df -h -x nfs -x nfs4 | awk 'NR>1 {print $1" "$5" "$6}'
+      register: disk_usage
+
+    - name: Save disk usage to a file
+      ansible.builtin.copy:
+        content: "{{ disk_usage.stdout }}"
+        dest: "/tmp/disk_usage_{{ inventory_hostname }}.txt"
+
+    - name: Check and format disk usage
+      ansible.builtin.set_fact:
+        disk_usage_warning: "{{ disk_usage.stdout_lines | select('search', '([2-9][0-9]|100)%') | map('regex_replace', '(.*)', '\\1') | list }}"
+
+    - name: Generate timestamp
+      ansible.builtin.shell: |
+        date +"%Y-%m-%d %H:%M:%S"
+      register: current_time
+
+    - name: Debug disk usage warning
+      ansible.builtin.debug:
+        var: disk_usage_warning
+
+    - name: Generate email body content and save on localhost
+      ansible.builtin.shell: |
+        echo -e "Dear Team,\n\nThis is an automated alert from the Ansible Disk Utilization Monitoring. The following filesystems on {{ inventory_hostname }} have exceeded 20% utilization:\n\n{{ disk_usage_warning | join('\n') }}\n\nKindly take the necessary actions to address this issue at the earliest.\n\nRegards,\nAnsible Automation" > /tmp/disk_usage_email_{{ inventory_hostname }}.txt
+      when: disk_usage_warning | length > 0
+      delegate_to: localhost
+
+- name: Send Email Alerts
+  hosts: localhost
+  become: yes
+  vars_files:
+    - secret.yml
+  tasks:
+    - name: Ensure mailx is installed on the Ansible server
+      ansible.builtin.package:
+        name: mailx
+        state: present
+
+    - name: Send email alert if disk usage exceeds 20%
+      ansible.builtin.shell: |
+        for file in /tmp/disk_usage_email_*.txt; do cat $file | /usr/bin/mailx -s "Alert! High Disk Utilization at $(basename $file .txt | cut -d'_' -f4): $(date)" -S smtp="smtp.gmail.com:587" -S smtp-use-starttls -S smtp-auth=login -S smtp-auth-user="{{ smtp_user }}" -S smtp-auth-password="{{ smtp_password }}" -S ssl-verify=ignore rampeesakiran3@gmail.com; done
+
