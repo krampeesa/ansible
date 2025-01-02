@@ -1,0 +1,59 @@
+---
+- name: Monitor Memory Usage and Trigger Email Alert
+  hosts: all
+  become: yes
+  vars_files:
+    - secret.yml
+
+  tasks:
+    - name: Get memory usage statistics
+      shell: |
+        free | grep Mem | awk '{print $3/$2 * 100.0}'
+      register: memory_usage
+      changed_when: false
+
+    - name: Get top 5 memory consuming processes
+      shell: |
+        ps -eo user,pid,ppid,cmd,%mem --sort=-%mem | head -n 6
+      register: top_mem_processes
+      changed_when: false
+
+    - name: Format top 5 memory consuming processes
+      shell: |
+        echo '{{ top_mem_processes.stdout }}' | awk '{printf "%-10s %-8s %-8s %-50s %-8s\n", $1, $2, $3, $4, $5}'
+      register: formatted_top_mem_processes
+      changed_when: false
+
+    - name: Generate timestamp
+      shell: |
+        date +"%Y-%m-%d %H:%M:%S"
+      register: current_time
+
+    - name: Generate email alert content if memory usage is above 80%
+      shell: |
+        echo -e "Dear Team,\n\nThis is an automated alert from the Ansible Memory Utilization Monitoring System. The memory usage has been above 80% on {{ inventory_hostname }}. \n\nCurrent Memory Usage Data:\n\n{{ memory_usage.stdout }}%\n\nTop 5 Memory Consuming Processes:\n\n{{ formatted_top_mem_processes.stdout }}\n\nKindly take the necessary actions to address this issue at the earliest.\n\nRegards,\nAnsible Automation" > /tmp/memory_usage_email_{{ inventory_hostname }}.txt
+      when: memory_usage.stdout | float < 80
+      delegate_to: localhost
+
+- name: Send Email Alerts
+  hosts: localhost
+  become: yes
+  vars_files:
+    - secret.yml
+  tasks:
+
+    - name: Send email alert if Memory utilization exceeds 80% using mailx
+      ansible.builtin.shell: |
+        for file in /tmp/memory_usage_email_*.txt; do
+          if [ -s $file ]; then
+            cat $file | /usr/bin/mailx -s "Alert! High Memory Utilization on $(basename $file .txt | cut -d'_' -f4): at  $(date)" -S smtp="smtp.gmail.com:587" -S smtp-use-starttls -S smtp-auth=login -S smtp-auth-user="{{ smtp_user }}" -S smtp-auth-password="{{ smtp_password }}" -S ssl-verify=ignore rampeesakiran3@gmail.com;
+          fi
+        done
+
+
+    - name: Remove previous run data
+      ansible.builtin.shell: |
+        for file in /tmp/memory_usage_email_*.txt; do rm -rf $file;done
+
+
+
