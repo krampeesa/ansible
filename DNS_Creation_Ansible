@@ -1,0 +1,70 @@
+- name: Create DNS record dynamically
+  hosts: windows
+  gather_facts: no
+
+  vars_prompt:
+    - name: dns_zone
+      prompt: "Please enter the DNS zone (e.g., brunswick.com)"
+      private: no
+
+    - name: dns_name
+      prompt: "Enter the hostname (e.g., myserver)"
+      private: no
+
+    - name: dns_ip
+      prompt: "Enter the IP address (e.g., 192.168.1.100)"
+      private: no
+
+  tasks:
+    - name: Checking Provided DNS zone exists or not
+      win_shell: |
+        $zone = Get-DnsServerZone -Name "{{ dns_zone }}" -ErrorAction SilentlyContinue
+        #if (-not $zone) { Write-Output "Zone '{{ dns_zone }}' does not exist." } else { Write-output "Zone Exists, Proceeding further" }
+        if ($zone) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: zone_check
+
+    - name: Log Zone check result
+      debug:
+        msg: >
+          {% if 'EXISTS' in zone_check.stdout %}
+           Provided DNS Zone {{ dns_zone }} found, proceeding further !!
+          {% else %}
+           ❌ ERROR: Provided DNS Zone "{{ dns_zone }}" not found — Skipping remaining tasks. Please try again.
+          {% endif %}
+
+
+    - name: Checking DNS record exists or not
+      win_shell: |
+        $record = Get-DnsServerResourceRecord -ZoneName "{{ dns_zone }}" -Name "{{ dns_name }}" -ErrorAction SilentlyContinue
+        if ($record) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: dns_status
+      when: "'EXISTS' in zone_check.stdout"
+
+    - name: Log DNS check result
+      debug:
+        msg: >
+          {% if 'EXISTS' in dns_status.stdout %}
+            DNS record {{ dns_name }}.{{ dns_zone }} already exists.
+          {% else %}
+            DNS record {{ dns_name }}.{{ dns_zone }} not exists — creating new one.
+          {% endif %}
+      when: "'EXISTS' in zone_check.stdout"
+
+    - name: Create DNS record if missing
+      community.windows.win_dns_record:
+        name: "{{ dns_name }}"
+        zone: "{{ dns_zone }}"
+        type: A
+        value: "{{ dns_ip }}"
+        ttl: 3600
+        state: present
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+
+    - name: Show success message if DNS record was created
+      debug:
+        msg: "✅ DNS record has been created successfully !! - '{{ dns_name }}.{{ dns_zone }}'"
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
