@@ -1,0 +1,92 @@
+Ansible set-up for Windows server.
+
+In windows server: run below in powershell,
+
+Enable-PSRemoting -Force --> enables remote management i.e winrm
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic -Value $true
+Set-Item -Path WSMan:\localhost\Service\AllowUnencrypted -Value $true --> optional run if it wont work
+New-LocalUser -Name ansisvc -Password root123 -FullName "Ansible Service Account" -Description "Used for Ansible WinRM automation" --> To create new user
+net localgroup "Administrators" "ansisvc" /add --> it will add ansisvc to admin group.
+
+
+In Ansible server:
+
+Step-1: Install pip
+# dnf install python3-pip
+
+step-2: Install pywinrm
+# pip3 install "pywinrm>=0.4.2"
+
+step-3: Install ansible collection
+# ansible-galaxy collection install ansible.windows
+
+Below is the inventory file for windows servers,
+
+[windows]
+192.168.1.6
+
+[windows:vars]
+ansible_user=ansisvc
+ansible_password=ansi123
+ansible_connection=winrm
+ansible_winrm_transport=basic
+ansible_port=5985
+ansible_winrm_server_cert_validation=ignore
+
+
+Run ping module
+# ansible all -m ansible.windows.win_ping
+
+
+Dynamic way to give user and password:
+# ansible all -m ansible.windows.win_ping -u ansisvc -k    (This will be useful if you don't want to provide credentials in inventory file)
+
+-k --> --ask-pass
+-u --> --user
+# ansible all -m ansible.windows.win_ping -k
+# ansible all -m ansible.windows.win_ping --user=ansisvc --ask-pass
+
+[if you wan to keep user name static or constant, add that in the inventory file and no need to use -u option.]
+
+
+# ansible-vault create vault.yml
+add vars like username and password in it, you can add multile vars which we added in groups var
+
+# ansible-playbook win_ping.yml --ask-vault-pass (in playbook, we need to add vars file i.e   
+
+vars_files:
+    - vault.yml
+
+
+--------------------------------------------------------------------------------------
+
+If you want to run from local/service account and clean inventory. Then follow below,
+
+Create a config file i.e ansible.cfg
+
+[ansisvc@oraclelinux ~]$ cat ansible.cfg
+[defaults]
+inventory = ./windows_hosts.ini
+
+---> If you don't want to give all these vars and keep it clean. Create group vars folder and store all variables in windows.yml instead of giving in inventory file
+
+[ansisvc@oraclelinux ~]$ pwd
+/home/ansisvc
+
+[ansisvc@oraclelinux ~]$ cat group_vars/windows.yml
+ansible_connection: winrm
+#ansible_user: ansisvc
+#ansible_password=Vishnavi763@
+ansible_winrm_transport: basic
+ansible_port: 5985
+ansible_winrm_server_cert_validation: ignore
+[ansisvc@oraclelinux ~]$
+
+[here, if you don't specify the user and password in vars file, you need to give during command/playbook run]
+
+# ansible all -m ansible.windows.win_ping (if you run want to run this, you need to add user and password in vars file)
+# ansible all -m ansible.windows.win_ping -u ansisvc -k  (this will useful if you don't want to store user credentils in vars file) [This will useful if indivudual wants ro run their own]
+
+# ansible all -m ansible.windows.win_ping --ask-pass (we need to add user in vars file, it will ask for passwod. This will useful one account used by multiple users)
+
+
