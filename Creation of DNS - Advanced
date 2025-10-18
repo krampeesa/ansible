@@ -1,0 +1,136 @@
+- name: Create DNS record dynamically
+  hosts: windows
+  gather_facts: no
+
+  vars_prompt:
+    - name: dns_zone
+      prompt: "Please enter the DNS zone (e.g., brunswick.com)"
+      private: no
+
+    - name: dns_name
+      prompt: "Enter the hostname (e.g., myserver)"
+      private: no
+
+    - name: dns_ip
+      prompt: "Enter the IP address (e.g., 192.168.1.100)"
+      private: no
+
+  tasks:
+    - name: Checking Provided DNS zone exists or not
+      win_shell: |
+        $zone = Get-DnsServerZone -Name "{{ dns_zone }}" -ErrorAction SilentlyContinue
+        #if (-not $zone) { Write-Output "Zone '{{ dns_zone }}' does not exist." } else { Write-output "Zone Exists, Proceeding further" }
+        if ($zone) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: zone_check
+
+    - name: Log Zone check result
+      debug:
+        msg: >
+          {% if 'EXISTS' in zone_check.stdout %}
+           Provided DNS Zone {{ dns_zone }} found, proceeding further !!
+          {% else %}
+           ❌ ERROR: Provided DNS Zone "{{ dns_zone }}" not found — Skipping remaining tasks. Please try again.
+          {% endif %}
+
+
+    - name: Checking DNS record exists or not
+      win_shell: |
+        $record = Get-DnsServerResourceRecord -ZoneName "{{ dns_zone }}" -Name "{{ dns_name }}" -ErrorAction SilentlyContinue
+        if ($record) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: dns_status
+      when: "'EXISTS' in zone_check.stdout"
+
+    - name: Log DNS check result
+      debug:
+        msg: >
+          {% if 'EXISTS' in dns_status.stdout %}
+            DNS record {{ dns_name }}.{{ dns_zone }} already exists. No action required. Exiting !
+          {% else %}
+            DNS record {{ dns_name }}.{{ dns_zone }} not exists.
+          {% endif %}
+      when: "'EXISTS' in zone_check.stdout"
+
+    - name: Validating given IP address format
+      win_shell: |
+        $ip = "{{ dns_ip }}"
+        if ($ip -match '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$') {
+          Write-Output "VALID"
+        } else {
+          Write-Output "INVALID"
+        }
+      register: ip_check
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+
+
+    - name: Set IP validity flag
+      set_fact:
+        ip_valid: "{{ ip_check.stdout.strip() == 'VALID' }}"
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+
+    - name: IP Format check result
+      debug:
+        msg: >
+          {% if  ip_valid %}
+           Provided IP Address Format is valid. Proceeding further,
+          {% else %}
+           ❌ ERROR: Provided IP Address Format is invalid. Skipping the DNS creation task. Please try again.
+          {% endif %}
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+
+    - name: Check if IP is having any DNS entris in the zone
+      win_shell: |
+        $records = Get-DnsServerResourceRecord -ZoneName "{{ dns_zone }}" -RRType "A" -ErrorAction SilentlyContinue
+        $match = $records | Where-Object { $_.RecordData.IPv4Address -eq "{{ dns_ip }}" }
+        if ($match) { Write-Output "IP_USED" } else { Write-Output "IP_FREE" }
+      register: ip_usage_check
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+         -  ip_valid
+
+
+    - name: IP DNS entry check result
+      debug:
+        msg: >
+          {% if 'IP_USED' in ip_usage_check.stdout %}
+            Provided IP address "{{ dns_ip }}" is already having the DNS record. Please re-validate and try again.
+          {% else %}
+            No existing record found for provided IP Address. Proceeding with new DNS creation.
+          {% endif %}
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+         -  ip_valid
+
+
+
+    - name: Creating DNS record
+      community.windows.win_dns_record:
+        name: "{{ dns_name }}"
+        zone: "{{ dns_zone }}"
+        type: A
+        value: "{{ dns_ip }}"
+        ttl: 3600
+        state: present
+      register: dns_create_result
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+         -  ip_valid
+         -  "'IP_FREE' in ip_usage_check.stdout"
+
+    - name: Show success message if DNS record was created
+      debug:
+        msg: "✅ DNS record has been created successfully !! - '{{ dns_name }}.{{ dns_zone }}'"
+      when:
+         -  "'EXISTS' in zone_check.stdout"
+         -  "'MISSING' in dns_status.stdout"
+         -  ip_valid
+         -  "'IP_FREE' in ip_usage_check.stdout"
+         -  dns_create_result.changed
