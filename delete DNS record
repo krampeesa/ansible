@@ -1,0 +1,60 @@
+- name: Delete DNS record if it exists
+  hosts: windows
+  gather_facts: no
+
+  vars_prompt:
+    - name: dns_name
+      prompt: "Enter the DNS name to delete (e.g., server01)"
+      private: no
+
+    - name: zone_name
+      prompt: "Enter the DNS zone name (e.g., example.com)"
+      private: no
+
+  tasks:
+    - name: Checking Provided DNS zone exists or not
+      win_shell: |
+        $zone = Get-DnsServerZone -Name "{{ zone_name }}" -ErrorAction SilentlyContinue
+        if ($zone) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: zone_check
+
+    - name: Log Zone check result
+      debug:
+        msg: >
+          {% if 'EXISTS' in zone_check.stdout %}
+           Provided DNS Zone {{ zone_name }} found, proceeding further !!
+          {% else %}
+           ❌ ERROR: Provided DNS Zone "{{ zone_name }}" not found — Skipping remaining tasks. Please try again.
+          {% endif %}
+
+
+    - name: Checking DNS record exists or not
+      win_shell: |
+        $record = Get-DnsServerResourceRecord -ZoneName "{{ zone_name }}" -Name "{{ dns_name }}" -ErrorAction SilentlyContinue
+        if ($record) { Write-Output "EXISTS" } else { Write-Output "MISSING" }
+      register: dns_status
+      when: "'EXISTS' in zone_check.stdout"
+
+    - name: Deleting the DNS record
+      community.windows.win_dns_record:
+        name: "{{ dns_name }}"
+        zone: "{{ zone_name }}"
+        type: A
+        ttl: 3600
+        state: absent
+      register: dns_delete_result
+      when:
+        -  "'EXISTS' in zone_check.stdout"
+        -  "'EXISTS' in dns_status.stdout"
+
+    - name: Show result
+      debug:
+        msg: >
+          {% if dns_status.stdout.strip() == "MISSING" %}
+            ❌ Provided DNS record '{{ dns_name }}' not found in '{{ zone_name }}' zone.
+          {% else %}
+            ✅ Successfully deleted the '{{ dns_name }}' record from '{{ zone_name }}' zone.
+          {% endif %}
+
+      when:
+        -  "'EXISTS' in zone_check.stdout"
