@@ -1,5 +1,5 @@
 - name: Create DNS record dynamically
-  hosts: windows
+  hosts: all
   gather_facts: no
 
   vars_prompt:
