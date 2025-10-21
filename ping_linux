@@ -1,0 +1,7 @@
+---
+- name: Check connectivity to Linux hosts
+  hosts: your_linux_hosts # Replace with your inventory group or specific host
+  gather_facts: false # Optional: Set to false if you only want to ping and not gather facts
+  tasks:
+    - name: Ping the host
+      ansible.builtin.ping
