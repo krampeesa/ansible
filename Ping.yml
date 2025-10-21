@@ -1,6 +1,6 @@
 ---
 - name: WinRM Ping Test
-  hosts: windows
+  hosts: all
   gather_facts: no
 
   tasks:
