@@ -1,0 +1,13 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- task: SSH@0
+  inputs:
+    sshEndpoint: 'SSH'
+    runOptions: 'commands'
+    commands: |
+      sudo yum update -y
