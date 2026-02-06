@@ -10,10 +10,13 @@ pool:
   vmImage: ubuntu-latest
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+- task: SSH@0
+  inputs:
+    sshEndpoint: 'SSH'   # Name of your SSH service connection
+    runOptions: 'commands'
+    commands: |
+      echo "Starting RHEL patching..."
+      sudo yum clean all
+      sudo yum update -y
+      echo "RHEL patching complete."
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
